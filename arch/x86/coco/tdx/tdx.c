@@ -128,6 +128,31 @@ u64 tdx_hcall_get_quote(u8 *buf, size_t size)
 }
 EXPORT_SYMBOL_GPL(tdx_hcall_get_quote);
 
+/**
+ * tdx_hcall_service() - Wrapper to request service from VMM
+ *                       using Service hypercall.
+ * @req: Address of the direct mapped command request buffer
+ *       which contains the service command.
+ * @resp: Address of the direct mapped command response buffer
+ *        to store service response.
+ * @vector: Interrupt vector for VMM callback notification.
+ * @timeout: Maximum Timeout in seconds for command request and
+ *           response.
+ *
+ * Refer to section titled "TDG.VP.VMCALL<Service>" in the TDX GHCI
+ * v1.5 specification for more information on Service hypercall.
+ *
+ * Return 0 on success, error code on failure.
+ */
+u64 tdx_hcall_service(struct tdx_service_req_buf *req,
+		      struct tdx_service_resp_buf *resp,
+		      u64 vector, u64 timeout)
+{
+	return _tdx_hypercall(TDVMCALL_SERVICE, cc_mkdec(virt_to_phys(req)),
+			      cc_mkdec(virt_to_phys(resp)), vector, timeout);
+}
+EXPORT_SYMBOL_GPL(tdx_hcall_service);
+
 static void __noreturn tdx_panic(const char *msg)
 {
 	struct tdx_module_args args = {

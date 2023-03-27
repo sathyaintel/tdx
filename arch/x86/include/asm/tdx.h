@@ -42,6 +42,36 @@ struct ve_info {
 	u32 instr_info;
 };
 
+/**
+  * struct tdx_service_req_buf - Service hypercall request command buffer
+  * @guid: GUID of the service requested.
+  * @buf_len: Length of the command buffer including the header.
+  * @rsvd: Reserved for future use.
+  * @data: Command specific data.
+  */
+struct tdx_service_req_buf
+{
+	u8 guid[16];
+	u32 buf_len;
+	u32 rsvd1;
+	u8 data[];
+};
+
+/**
+  * struct tdx_service_resp_buf - Service hypercall response buffer.
+  * @guid: GUID of the service requested.
+  * @buf_len: Length of the response buffer including the header.
+  * @status: Status of the request.
+  * @data: Command specific data.
+  */
+struct tdx_service_resp_buf
+{
+	u8 guid[16];
+	u32 buf_len;
+	u32 status;
+	u8 data[];
+};
+
 #ifdef CONFIG_INTEL_TDX_GUEST
 
 void __init tdx_early_init(void);
@@ -57,6 +87,10 @@ bool tdx_early_handle_ve(struct pt_regs *regs);
 int tdx_mcall_get_report0(u8 *reportdata, u8 *tdreport);
 
 u64 tdx_hcall_get_quote(u8 *buf, size_t size);
+
+u64 tdx_hcall_service(struct tdx_service_req_buf *req,
+		      struct tdx_service_resp_buf *resp,
+		      u64 vector, u64 timeout);
 
 #else
 
