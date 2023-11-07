@@ -50,6 +50,13 @@
 /* TDX attestation key id service operation header */
 #define TDX_ATT_OP_ID_GET_KEY_ID		0x04
 
+/* TDX attestation Quote operation service header */
+#define TDX_ATT_OP_ID_QUOTE_REQ			0x05
+#define TDX_ATT_OP_QUOTE_REQ_VERSION		0x000000001
+
+/* TDX GetQuote service codes */
+#define TDX_ATT_CMD_SERVICE_QUOTE_TIMEOUT	5000
+
 /* struct tdx_quote_buf: Format of Quote request buffer.
  * @version: Quote format version, filled by TD.
  * @status: Status code of Quote request, filled by VMM.
@@ -157,6 +164,22 @@ struct att_cmd_op_key_id_resp {
 	u8 guids[];
 };
 
+struct att_cmd_op_quote_req {
+	u32 version;
+	u32 report_size;
+	u32 owner_data_size;
+	u8 att_key_id[16];
+	u8 data[TDX_REPORT_LEN];
+};
+
+struct att_cmd_op_quote_resp {
+	u32 version;
+	u32 result;
+	u32 quote_size;
+	u8 att_key_id[16];
+	u8 quote_data[];
+};
+
 static int tdx_att_req(guid_t guid, u8 op_id, void *data, size_t data_len, u64 timeout)
 {
 	struct att_cmd_req_buf *req = req_buf;
@@ -246,6 +269,42 @@ int tdx_get_att_key_id_list(struct tsm_rpsrv *rpsrv, void *data)
 
 	rpsrv->att_key_id_count = op_resp->result_size;
 	rpsrv->att_key_id_list = buf;
+
+	return 0;
+}
+
+static int tdx_service_gen_quote(struct tsm_report *report, u8 *tdreport)
+{
+	struct att_cmd_resp_buf *resp = resp_buf;
+	struct att_cmd_op_quote_req op_req = {};
+	struct att_cmd_op_quote_resp *op_resp;
+	int ret;
+	u8 *buf;
+
+	/* Initialize quote request operation header */
+	op_req.version = TDX_ATT_OP_QUOTE_REQ_VERSION;
+	op_req.report_size = TDX_REPORT_LEN;
+	op_req.owner_data_size = 0;
+	memcpy(op_req.att_key_id, &report->desc.attestation_key_guid, sizeof(guid_t));
+	memcpy(op_req.data, tdreport, TDX_REPORT_LEN);
+
+	op_resp = (struct att_cmd_op_quote_resp *)resp->op_data;
+
+	ret = tdx_att_req(report->desc.remote_guid,
+			  TDX_ATT_OP_ID_QUOTE_REQ,
+			  &op_req, sizeof(op_req),
+			  TDX_ATT_CMD_SERVICE_QUOTE_TIMEOUT);
+	if (ret || op_resp->result) {
+		pr_err("Quote Service hypercall failed, err:%x\n", op_resp->result);
+		return -EIO;
+	}
+
+	buf = kvmemdup(op_resp->quote_data, op_resp->quote_size, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	report->outblob = buf;
+	report->outblob_len = op_resp->quote_size;
 
 	return 0;
 }
@@ -389,6 +448,11 @@ static int tdx_report_new(struct tsm_report *report, void *data)
 	ret = tdx_mcall_get_report0(reportdata, tdreport);
 	if (ret) {
 		pr_err("GetReport call failed\n");
+		goto done;
+	}
+
+	if (!guid_is_null(&desc->remote_guid)) {
+		ret = tdx_service_gen_quote(data, tdreport);
 		goto done;
 	}
 
