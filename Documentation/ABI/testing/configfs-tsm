@@ -118,3 +118,12 @@ Description:
 		sure the number of writes matches expectations after reading
 		the result, or it can prevent conflicts by creating a reportserver
 		instance per requesting context.
+
+What:          /sys/kernel/config/tsm/report/$name/remote_guid
+Date:          November, 2023
+KernelVersion: v6.8
+Contact:       linux-coco@lists.linux.dev
+Description:
+	       (RW) GUID of the report generation remote server. Used if the report
+	       generation service is hosted in a remote VM. Userspace can read back
+	       to verify whether a valid GUID is configured.
