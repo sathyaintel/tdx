@@ -4,6 +4,7 @@
 
 #include <linux/sizes.h>
 #include <linux/types.h>
+#include <linux/uuid.h>
 
 #define TSM_INBLOB_MAX 64
 #define TSM_OUTBLOB_MAX SZ_32K
@@ -43,10 +44,28 @@ struct tsm_report {
 };
 
 /**
+ * struct tsm_rpsrv - Track the state of report server operations
+ * @guid: GUID of the report server.
+ * @rpsrv_count: Count of report signing servers
+ * @rpsrv_list: List of report signing servers.
+ * @att_key_id_count: Count of available attestation key IDs.
+ * @att_key_id_list: List of attestation IDs assosiated with signing keys.
+ */
+struct tsm_rpsrv {
+	guid_t guid;
+	size_t rpsrv_count;
+	guid_t *rpsrv_list;
+	size_t att_key_id_count;
+	guid_t *att_key_id_list;
+};
+
+/**
  * struct tsm_ops - attributes and operations for tsm instances
  * @name: tsm id reflected in /sys/kernel/config/tsm/report/$report/provider
  * @privlevel_floor: convey base privlevel for nested scenarios
  * @report_new: Populate @report with the report blob and auxblob
+ * @get_rpsrv_list: Get list of supported report server GUIDs.
+ * @get_att_key_id_list: Get list of supported attestation key ID GUIDs.
  * (optional), return 0 on successful population, or -errno otherwise
  *
  * Implementation specific ops, only one is expected to be registered at
@@ -56,6 +75,8 @@ struct tsm_ops {
 	const char *name;
 	const unsigned int privlevel_floor;
 	int (*report_new)(struct tsm_report *report, void *data);
+	int (*get_rpsrv_list)(struct tsm_rpsrv *rpsrv, void *data);
+	int (*get_att_key_id_list)(struct tsm_rpsrv *rpsrv, void *data);
 };
 
 extern const struct config_item_type tsm_report_default_type;

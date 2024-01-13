@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/cleanup.h>
 #include <linux/configfs.h>
+#include <linux/ctype.h>
 
 static struct tsm_provider {
 	const struct tsm_ops *ops;
@@ -45,10 +46,39 @@ struct tsm_report_state {
 	struct config_item cfg;
 };
 
+struct tsm_rpsrv_state {
+	struct tsm_rpsrv rpsrv;
+	unsigned long write_generation;
+	unsigned long read_generation;
+	struct config_item cfg;
+};
+
 enum tsm_data_select {
 	TSM_REPORT,
 	TSM_CERTS,
 };
+
+int str_to_guid(const char *buf, u8 *guid, size_t len)
+{
+	const char *p = buf;
+	int i;
+
+	for (i = 0; i < UUID_SIZE; i++) {
+		if (p + 2 > buf + len)
+			return -EINVAL;
+
+		if (!isxdigit(p[0]) || !isxdigit(p[1]))
+			return -EINVAL;
+
+		guid[i] = (hex_to_bin(p[0]) << 4) | hex_to_bin(p[1]);
+		p += 2;
+
+		if (*p == '-' || *p == ':')
+			p++;
+	}
+
+	return 0;
+}
 
 static struct tsm_report *to_tsm_report(struct config_item *cfg)
 {
@@ -66,6 +96,37 @@ static struct tsm_report_state *to_state(struct tsm_report *report)
 static int try_advance_write_generation(struct tsm_report *report)
 {
 	struct tsm_report_state *state = to_state(report);
+
+	lockdep_assert_held_write(&tsm_rwsem);
+
+	/*
+	 * Malicious or broken userspace has written enough times for
+	 * read_generation == write_generation by modular arithmetic without an
+	 * interim read. Stop accepting updates until the current report
+	 * configuration is read.
+	 */
+	if (state->write_generation == state->read_generation - 1)
+		return -EBUSY;
+	state->write_generation++;
+	return 0;
+}
+
+static struct tsm_rpsrv *to_tsm_rpsrv(struct config_item *cfg)
+{
+	struct tsm_rpsrv_state *state =
+		container_of(cfg, struct tsm_rpsrv_state, cfg);
+
+	return &state->rpsrv;
+}
+
+static struct tsm_rpsrv_state *to_rpsrv_state(struct tsm_rpsrv *rpsrv)
+{
+	return container_of(rpsrv, struct tsm_rpsrv_state, rpsrv);
+}
+
+static int try_rpsrv_advance_write_generation(struct tsm_rpsrv *rpsrv)
+{
+	struct tsm_rpsrv_state *state = to_rpsrv_state(rpsrv);
 
 	lockdep_assert_held_write(&tsm_rwsem);
 
@@ -339,6 +400,148 @@ static const struct config_item_type tsm_reports_type = {
 	.ct_group_ops = &tsm_report_group_ops,
 };
 
+static ssize_t tsm_rpsrv_generation_show(struct config_item *cfg, char *buf)
+{
+	struct tsm_rpsrv *rpsrv = to_tsm_rpsrv(cfg);
+	struct tsm_rpsrv_state *state = to_rpsrv_state(rpsrv);
+
+	guard(rwsem_read)(&tsm_rwsem);
+	return sysfs_emit(buf, "%lu\n", state->write_generation);
+}
+CONFIGFS_ATTR_RO(tsm_rpsrv_, generation);
+
+static ssize_t tsm_rpsrv_guid_show(struct config_item *cfg, char *buf)
+{
+	struct tsm_rpsrv *rpsrv = to_tsm_rpsrv(cfg);
+
+	guard(rwsem_read)(&tsm_rwsem);
+
+	return sysfs_emit(buf, "%pUb\n", &rpsrv->guid);
+}
+
+static ssize_t tsm_rpsrv_guid_store(struct config_item *cfg, const char *buf, size_t len)
+{
+	struct tsm_rpsrv *rpsrv = to_tsm_rpsrv(cfg);
+	u8 guid[UUID_SIZE];
+	int rc;
+
+	guard(rwsem_write)(&tsm_rwsem);
+
+	rc = try_rpsrv_advance_write_generation(rpsrv);
+	if (rc)
+		return rc;
+
+	rc = str_to_guid(buf, guid, len);
+	if (rc)
+		return rc;
+
+	memcpy(&rpsrv->guid, guid, sizeof(guid));
+
+	return len;
+}
+CONFIGFS_ATTR(tsm_rpsrv_, guid);
+
+static ssize_t tsm_rpsrv_report_server_list_show(struct config_item *cfg, char *buf)
+{
+	struct tsm_rpsrv *rpsrv = to_tsm_rpsrv(cfg);
+	const struct tsm_ops *ops;
+	ssize_t rc, l;
+	int i;
+
+	guard(rwsem_read)(&tsm_rwsem);
+
+	ops = provider.ops;
+	if (!ops || !ops->get_rpsrv_list)
+		return -ENOTTY;
+
+	rc = ops->get_rpsrv_list(rpsrv, provider.data);
+	if (rc < 0)
+		return rc;
+
+	for (i = 0; i < rpsrv->rpsrv_count; i++)
+		l += sysfs_emit_at(buf, l, "%pUB\n", &rpsrv->rpsrv_list[i]);
+
+	return l;
+}
+CONFIGFS_ATTR_RO(tsm_rpsrv_, report_server_list);
+
+static ssize_t tsm_rpsrv_attestation_key_id_list_show(struct config_item *cfg, char *buf)
+{
+	struct tsm_rpsrv *rpsrv = to_tsm_rpsrv(cfg);
+	const struct tsm_ops *ops;
+	ssize_t rc, l;
+	int i;
+
+	guard(rwsem_read)(&tsm_rwsem);
+
+	ops = provider.ops;
+	if (!ops || !ops->get_att_key_id_list)
+		return -ENOTTY;
+
+	rc = ops->get_att_key_id_list(rpsrv, provider.data);
+	if (rc < 0)
+		return rc;
+
+	for (i = 0; i < rpsrv->att_key_id_count; i++)
+		l += sysfs_emit_at(buf, l, "%pUB\n", &rpsrv->att_key_id_list[i]);
+
+	return l;
+}
+CONFIGFS_ATTR_RO(tsm_rpsrv_, attestation_key_id_list);
+
+static struct configfs_attribute *tsm_rpsrv_attrs[] = {
+	&tsm_rpsrv_attr_guid,
+	&tsm_rpsrv_attr_generation,
+	&tsm_rpsrv_attr_report_server_list,
+	&tsm_rpsrv_attr_attestation_key_id_list,
+	NULL,
+};
+
+static void tsm_rpsrv_item_release(struct config_item *cfg)
+{
+	struct tsm_rpsrv *rpsrv = to_tsm_rpsrv(cfg);
+	struct tsm_rpsrv_state *state = to_rpsrv_state(rpsrv);
+
+	kfree(state);
+}
+
+static struct configfs_item_operations tsm_rpsrv_item_ops = {
+	.release = tsm_rpsrv_item_release,
+};
+
+const struct config_item_type tsm_rpsrv_default_type = {
+	.ct_owner = THIS_MODULE,
+	.ct_attrs = tsm_rpsrv_attrs,
+	.ct_item_ops = &tsm_rpsrv_item_ops,
+};
+EXPORT_SYMBOL_GPL(tsm_rpsrv_default_type);
+
+static struct config_item *tsm_rpsrv_make_item(struct config_group *group,
+						       const char *name)
+{
+	struct tsm_rpsrv_state *state;
+
+	guard(rwsem_read)(&tsm_rwsem);
+	if (!provider.ops)
+		return ERR_PTR(-ENXIO);
+
+	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	if (!state)
+		return ERR_PTR(-ENOMEM);
+
+	config_item_init_type_name(&state->cfg, name, &tsm_rpsrv_default_type);
+	return &state->cfg;
+}
+
+static struct configfs_group_operations tsm_rpsrv_group_ops = {
+	.make_item = tsm_rpsrv_make_item,
+};
+
+static const struct config_item_type tsm_rpsrv_type = {
+	.ct_owner = THIS_MODULE,
+	.ct_group_ops = &tsm_rpsrv_group_ops,
+};
+
 static const struct config_item_type tsm_root_group_type = {
 	.ct_owner = THIS_MODULE,
 };
@@ -390,11 +593,12 @@ int tsm_unregister(const struct tsm_ops *ops)
 EXPORT_SYMBOL_GPL(tsm_unregister);
 
 static struct config_group *tsm_report_group;
+static struct config_group *tsm_rpsrv_group;
 
 static int __init tsm_init(void)
 {
 	struct config_group *root = &tsm_configfs.su_group;
-	struct config_group *tsm;
+	struct config_group *tsm, *tsm_rpsrv;
 	int rc;
 
 	config_group_init(root);
@@ -405,17 +609,35 @@ static int __init tsm_init(void)
 	tsm = configfs_register_default_group(root, "report",
 					      &tsm_reports_type);
 	if (IS_ERR(tsm)) {
-		configfs_unregister_subsystem(&tsm_configfs);
-		return PTR_ERR(tsm);
+		rc = PTR_ERR(tsm);
+		goto free_subsys;
 	}
+
+	tsm_rpsrv = configfs_register_default_group(root, "reportserver",
+							    &tsm_rpsrv_type);
+	if (IS_ERR(tsm_rpsrv)) {
+		configfs_unregister_subsystem(&tsm_configfs);
+		rc = PTR_ERR(tsm_rpsrv);
+		goto free_tsm;
+	}
+
 	tsm_report_group = tsm;
+	tsm_rpsrv_group = tsm_rpsrv;
 
 	return 0;
+
+free_tsm:
+	configfs_unregister_default_group(tsm);
+free_subsys:
+	configfs_unregister_subsystem(&tsm_configfs);
+
+	return rc;
 }
 module_init(tsm_init);
 
 static void __exit tsm_exit(void)
 {
+	configfs_unregister_default_group(tsm_rpsrv_group);
 	configfs_unregister_default_group(tsm_report_group);
 	configfs_unregister_subsystem(&tsm_configfs);
 }

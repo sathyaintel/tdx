@@ -80,3 +80,41 @@ Contact:	linux-coco@lists.linux.dev
 Description:
 		(RO) Indicates the minimum permissible value that can be written
 		to @privlevel.
+
+What:          /sys/kernel/config/tsm/reportserver/$name/guid
+Date:          January, 2024
+KernelVersion: v6.9
+Contact:       linux-coco@lists.linux.dev
+Description:
+	       (RW) GUID of the reportserver selected by the user. Used to view
+	       server more specific information. Used if report generation service
+	       is hosted in a remote VM.
+
+What:          /sys/kernel/config/tsm/reportserver/$name/report_server_list
+Date:          January, 2024
+KernelVersion: v6.9
+Contact:       linux-coco@lists.linux.dev
+Description:
+	       (R) List of remote report server GUIDs currently supported by the VMM.
+	       Used if report generation service is hosted in a remote VM.
+
+What:          /sys/kernel/config/tsm/reportserver/$name/attestation_key_id_list
+Date:          January, 2024
+KernelVersion: v6.9
+Contact:       linux-coco@lists.linux.dev
+Description:
+	       (R) List of attestation key IDs currently supported by the Quoting
+	       enclave or service. Used if report generation service is hosted in a
+	       remote VM.
+
+What:		/sys/kernel/config/tsm/reportserver/$name/generation
+Date:		January, 2024
+KernelVersion:	v6.9
+Contact:	linux-coco@lists.linux.dev
+Description:
+		(RO) The value in this attribute increments each time any
+		any reportserver option is written. Userspace can detect conflicts
+		by checking generation before writing to any attribute and making
+		sure the number of writes matches expectations after reading
+		the result, or it can prevent conflicts by creating a reportserver
+		instance per requesting context.
