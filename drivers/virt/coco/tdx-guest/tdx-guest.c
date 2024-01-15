@@ -43,6 +43,10 @@
 #define TDX_ATT_CMD_REQ_SER			0x02
 #define TDX_ATT_CMD_OP_COMM			0x01
 
+/* TDX attestation query service operation header */
+#define TDX_ATT_OP_ID_QUERY_SERVICE		0x02
+#define TDX_ATT_OP_QUERY_VERSION		0x00010000
+
 /* struct tdx_quote_buf: Format of Quote request buffer.
  * @version: Quote format version, filled by TD.
  * @status: Status code of Quote request, filled by VMM.
@@ -76,6 +80,9 @@ static u32 getquote_timeout = 30;
 
 /* TDX service command request/response buffers */
 static void *req_buf, *resp_buf;
+
+/* GUID to query host services */
+static guid_t host_query_guid = GUID_INIT(0x6385c05c, 0xfcc5, 0x41fd, 0xab, 0xd2, 0xfd, 0xca, 0xae, 0xce, 0x97, 0x7d);
 
 /* struct att_cmd_req_buf - Buffer used for attestation related
  * 			    service requests.
@@ -123,6 +130,19 @@ struct att_cmd_resp_buf {
 	u8 op_data[];
 };
 
+struct att_cmd_op_query_req {
+	u32 version;
+	u32 query;
+	u8 service_type[8];
+};
+
+struct att_cmd_op_query_resp {
+	u32 version;
+	u32 result;
+	u32 result_size;
+	u8 guids[];
+};
+
 static int tdx_att_req(guid_t guid, u8 op_id, void *data, size_t data_len, u64 timeout)
 {
 	struct att_cmd_req_buf *req = req_buf;
@@ -155,6 +175,33 @@ static int tdx_att_req(guid_t guid, u8 op_id, void *data, size_t data_len, u64 t
 		pr_err("Service hypercall failed, err:%x\n", resp->hdr.status);
 		return -EIO;
 	}
+
+	return 0;
+}
+
+int tdx_get_rpsrv_list(struct tsm_rpsrv *rpsrv, void *data)
+{
+	struct att_cmd_resp_buf *resp = resp_buf;
+	struct att_cmd_op_query_req op_req = {};
+	struct att_cmd_op_query_resp *op_resp;
+	void *buf;
+	int ret;
+
+	op_req.version = TDX_ATT_OP_QUERY_VERSION;
+	op_resp = (struct att_cmd_op_query_resp *)resp->op_data;
+
+	ret = tdx_att_req(host_query_guid, TDX_ATT_OP_ID_QUERY_SERVICE,
+			  &op_req, sizeof(op_req), 0);
+	if (ret || op_resp->result)
+		return -EIO;
+
+	buf = kvmemdup(op_resp->guids, op_resp->result_size * sizeof(guid_t),
+		       GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	rpsrv->rpsrv_count = op_resp->result_size;
+	rpsrv->rpsrv_list = buf;
 
 	return 0;
 }
@@ -375,6 +422,7 @@ MODULE_DEVICE_TABLE(x86cpu, tdx_guest_ids);
 static const struct tsm_ops tdx_tsm_ops = {
 	.name = KBUILD_MODNAME,
 	.report_new = tdx_report_new,
+	.get_rpsrv_list = tdx_get_rpsrv_list,
 };
 
 static int tdx_service_init(void)
