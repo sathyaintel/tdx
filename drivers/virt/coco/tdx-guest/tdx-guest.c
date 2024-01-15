@@ -39,6 +39,10 @@
 #define SERVICE_REQ_BUF_LEN		SZ_4K
 #define SERVICE_RESP_BUF_LEN		SZ_16K
 
+/* TDX service attestation command buffer header */
+#define TDX_ATT_CMD_REQ_SER			0x02
+#define TDX_ATT_CMD_OP_COMM			0x01
+
 /* struct tdx_quote_buf: Format of Quote request buffer.
  * @version: Quote format version, filled by TD.
  * @status: Status code of Quote request, filled by VMM.
@@ -72,6 +76,88 @@ static u32 getquote_timeout = 30;
 
 /* TDX service command request/response buffers */
 static void *req_buf, *resp_buf;
+
+/* struct att_cmd_req_buf - Buffer used for attestation related
+ * 			    service requests.
+ *
+ * @hdr: Service hypercall request header.
+ * @ver: Command version number.
+ * @cmd: Command type.
+ * @op: Operation type
+ * @rsvd: Reserved for future extension.
+ * @op_id: Operation ID.
+ * @op_data: Operation data.
+ */
+struct att_cmd_req_buf {
+	struct tdx_service_req_buf hdr;
+
+	/* Command specific header */
+	u8 version;
+	u8 cmd;
+	u8 op;
+	u8 rsvd;
+	u8 op_id;
+	u8 op_data[];
+};
+
+/* struct att_cmd_resp_buf - Buffer used for attestation related
+ * 			     service response.
+ *
+ * @hdr: Service hypercall response header.
+ * @ver: Command version number.
+ * @cmd: Command type.
+ * @op: Operation type
+ * @rsvd: Reserved for future extension.
+ * @op_id: Operation ID.
+ * @op_data: Operation data.
+ */
+struct att_cmd_resp_buf {
+	struct tdx_service_resp_buf hdr;
+
+	/* Command specific header */
+	u8 version;
+	u8 cmd;
+	u8 op;
+	u8 rsvd;
+	u8 op_id;
+	u8 op_data[];
+};
+
+static int tdx_att_req(guid_t guid, u8 op_id, void *data, size_t data_len, u64 timeout)
+{
+	struct att_cmd_req_buf *req = req_buf;
+	struct att_cmd_resp_buf *resp = resp_buf;
+	u64 ret;
+
+	if ((data_len + sizeof(*req)) >= SERVICE_REQ_BUF_LEN) {
+		pr_info("Attestation cmd data len too large\n");
+		return -EINVAL;
+	}
+
+	/* Initialize request service header */
+	memcpy(req->hdr.guid, &guid, sizeof(guid_t));
+	req->hdr.buf_len = sizeof(*req) + data_len;
+
+	/* Initialize request command header */
+	req->version = 0;
+	req->cmd = TDX_ATT_CMD_REQ_SER;
+	req->op = TDX_ATT_CMD_OP_COMM;
+
+	/* Initialize request operation header */
+	req->op_id = op_id;
+	memcpy(req->op_data, data, data_len);
+
+	ret = tdx_hcall_service(req_buf, resp_buf, 0, timeout);
+	if (ret)
+		return -EIO;
+
+	if (resp->hdr.status) {
+		pr_err("Service hypercall failed, err:%x\n", resp->hdr.status);
+		return -EIO;
+	}
+
+	return 0;
+}
 
 static long tdx_get_report0(struct tdx_report_req __user *req)
 {
