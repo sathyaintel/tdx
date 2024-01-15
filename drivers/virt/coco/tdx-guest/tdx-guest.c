@@ -35,6 +35,10 @@
 #define GET_QUOTE_SUCCESS		0
 #define GET_QUOTE_IN_FLIGHT		0xffffffffffffffff
 
+/* TDX service command buffer size */
+#define SERVICE_REQ_BUF_LEN		SZ_4K
+#define SERVICE_RESP_BUF_LEN		SZ_16K
+
 /* struct tdx_quote_buf: Format of Quote request buffer.
  * @version: Quote format version, filled by TD.
  * @status: Status code of Quote request, filled by VMM.
@@ -65,6 +69,9 @@ static DEFINE_MUTEX(quote_lock);
  * is enough time for QE to respond to any Quote requests.
  */
 static u32 getquote_timeout = 30;
+
+/* TDX service command request/response buffers */
+static void *req_buf, *resp_buf;
 
 static long tdx_get_report0(struct tdx_report_req __user *req)
 {
@@ -101,31 +108,32 @@ out:
 	return ret;
 }
 
-static void free_quote_buf(void *buf)
+static void free_shared_pages(void *addr, size_t len)
 {
-	size_t len = PAGE_ALIGN(GET_QUOTE_BUF_SIZE);
-	unsigned int count = len >> PAGE_SHIFT;
+	size_t aligned_len = PAGE_ALIGN(len);
+	unsigned int count = aligned_len >> PAGE_SHIFT;
 
-	if (set_memory_encrypted((unsigned long)buf, count)) {
+	if (set_memory_encrypted((unsigned long)addr, count)) {
 		pr_err("Failed to restore encryption mask for Quote buffer, leak it\n");
 		return;
 	}
 
-	free_pages_exact(buf, len);
+	free_pages_exact(addr, aligned_len);
+
 }
 
-static void *alloc_quote_buf(void)
+static void *alloc_shared_pages(size_t len)
 {
-	size_t len = PAGE_ALIGN(GET_QUOTE_BUF_SIZE);
-	unsigned int count = len >> PAGE_SHIFT;
+	size_t aligned_len = PAGE_ALIGN(len);
+	unsigned int count = aligned_len >> PAGE_SHIFT;
 	void *addr;
 
-	addr = alloc_pages_exact(len, GFP_KERNEL | __GFP_ZERO);
+	addr = alloc_pages_exact(aligned_len, GFP_KERNEL | __GFP_ZERO);
 	if (!addr)
 		return NULL;
 
 	if (set_memory_decrypted((unsigned long)addr, count)) {
-		free_pages_exact(addr, len);
+		free_pages_exact(addr, aligned_len);
 		return NULL;
 	}
 
@@ -283,6 +291,30 @@ static const struct tsm_ops tdx_tsm_ops = {
 	.report_new = tdx_report_new,
 };
 
+static int tdx_service_init(void)
+{
+	req_buf = alloc_shared_pages(SERVICE_REQ_BUF_LEN);
+	if (!req_buf)
+		return -ENOMEM;
+
+	resp_buf = alloc_shared_pages(SERVICE_RESP_BUF_LEN);
+	if (!resp_buf) {
+		free_shared_pages(req_buf, SERVICE_REQ_BUF_LEN);
+		return -ENOMEM;
+	}
+
+	return 0;
+
+}
+
+static void tdx_service_deinit(void)
+{
+	if (req_buf)
+		free_shared_pages(req_buf, SERVICE_REQ_BUF_LEN);
+	if (resp_buf)
+		free_shared_pages(req_buf, SERVICE_RESP_BUF_LEN);
+}
+
 static int __init tdx_guest_init(void)
 {
 	int ret;
@@ -294,21 +326,30 @@ static int __init tdx_guest_init(void)
 	if (ret)
 		return ret;
 
-	quote_data = alloc_quote_buf();
+	quote_data = alloc_shared_pages(GET_QUOTE_BUF_SIZE);
 	if (!quote_data) {
 		pr_err("Failed to allocate Quote buffer\n");
 		ret = -ENOMEM;
 		goto free_misc;
 	}
 
+	ret = tdx_service_init();
+	if (ret) {
+		pr_err("Failed to allocate service buffers\n");
+		ret = -ENOMEM;
+		goto free_quote;
+	}
+
 	ret = tsm_register(&tdx_tsm_ops, NULL, NULL);
 	if (ret)
-		goto free_quote;
+		goto free_service;
 
 	return 0;
 
+free_service:
+	tdx_service_deinit();
 free_quote:
-	free_quote_buf(quote_data);
+	free_shared_pages(quote_data, GET_QUOTE_BUF_SIZE);
 free_misc:
 	misc_deregister(&tdx_misc_dev);
 
@@ -319,7 +360,8 @@ module_init(tdx_guest_init);
 static void __exit tdx_guest_exit(void)
 {
 	tsm_unregister(&tdx_tsm_ops);
-	free_quote_buf(quote_data);
+	free_shared_pages(quote_data, GET_QUOTE_BUF_SIZE);
+	tdx_service_deinit();
 	misc_deregister(&tdx_misc_dev);
 }
 module_exit(tdx_guest_exit);
