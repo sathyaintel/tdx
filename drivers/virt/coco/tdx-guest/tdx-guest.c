@@ -47,6 +47,9 @@
 #define TDX_ATT_OP_ID_QUERY_SERVICE		0x02
 #define TDX_ATT_OP_QUERY_VERSION		0x00010000
 
+/* TDX attestation key id service operation header */
+#define TDX_ATT_OP_ID_GET_KEY_ID		0x04
+
 /* struct tdx_quote_buf: Format of Quote request buffer.
  * @version: Quote format version, filled by TD.
  * @status: Status code of Quote request, filled by VMM.
@@ -143,6 +146,17 @@ struct att_cmd_op_query_resp {
 	u8 guids[];
 };
 
+struct att_cmd_op_key_id_req {
+	u32 version;
+};
+
+struct att_cmd_op_key_id_resp {
+	u32 version;
+	u32 result;
+	u32 result_size;
+	u8 guids[];
+};
+
 static int tdx_att_req(guid_t guid, u8 op_id, void *data, size_t data_len, u64 timeout)
 {
 	struct att_cmd_req_buf *req = req_buf;
@@ -202,6 +216,36 @@ int tdx_get_rpsrv_list(struct tsm_rpsrv *rpsrv, void *data)
 
 	rpsrv->rpsrv_count = op_resp->result_size;
 	rpsrv->rpsrv_list = buf;
+
+	return 0;
+}
+
+int tdx_get_att_key_id_list(struct tsm_rpsrv *rpsrv, void *data)
+{
+	struct att_cmd_resp_buf *resp = resp_buf;
+	struct att_cmd_op_key_id_req op_req = {};
+	struct att_cmd_op_key_id_resp *op_resp;
+	void *buf;
+	int ret;
+
+	if (guid_is_null(&rpsrv->guid)) {
+		pr_info("Fetching key IDs failed, invalid GUID\n");
+		return -EINVAL;
+	}
+
+	op_resp = (struct att_cmd_op_key_id_resp *)resp->op_data;
+
+	ret = tdx_att_req(rpsrv->guid, TDX_ATT_OP_ID_GET_KEY_ID,
+			  &op_req, sizeof(op_req), 0);
+	if (ret || op_resp->result)
+		return -EIO;
+
+	buf = kvmemdup(op_resp->guids, op_resp->result_size, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	rpsrv->att_key_id_count = op_resp->result_size;
+	rpsrv->att_key_id_list = buf;
 
 	return 0;
 }
@@ -423,6 +467,7 @@ static const struct tsm_ops tdx_tsm_ops = {
 	.name = KBUILD_MODNAME,
 	.report_new = tdx_report_new,
 	.get_rpsrv_list = tdx_get_rpsrv_list,
+	.get_att_key_id_list = tdx_get_att_key_id_list,
 };
 
 static int tdx_service_init(void)
