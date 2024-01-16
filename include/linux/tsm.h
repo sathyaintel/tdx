@@ -21,12 +21,14 @@
  * @inblob_len: sizeof @inblob
  * @inblob: arbitrary input data
  * @remote_guid: GUID of the report generation server
+ * @attestation_key_guid: GUID of the attestation key
  */
 struct tsm_desc {
 	unsigned int privlevel;
 	size_t inblob_len;
 	u8 inblob[TSM_INBLOB_MAX];
 	guid_t remote_guid;
+	guid_t attestation_key_guid;
 };
 
 /**

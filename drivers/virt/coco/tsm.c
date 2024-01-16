@@ -246,6 +246,38 @@ static ssize_t tsm_report_remote_guid_store(struct config_item *cfg,
 }
 CONFIGFS_ATTR(tsm_report_, remote_guid);
 
+static ssize_t tsm_report_attestation_key_id_show(struct config_item *cfg, char *buf)
+{
+	struct tsm_report *report = to_tsm_report(cfg);
+
+	guard(rwsem_read)(&tsm_rwsem);
+
+	return sysfs_emit(buf, "%pUb\n", &report->desc.remote_guid);
+}
+
+static ssize_t tsm_report_attestation_key_id_store(struct config_item *cfg,
+						   const char *buf, size_t len)
+{
+	struct tsm_report *report = to_tsm_report(cfg);
+	u8 guid[UUID_SIZE];
+	int rc;
+
+	guard(rwsem_write)(&tsm_rwsem);
+
+	rc = try_advance_write_generation(report);
+	if (rc)
+		return rc;
+
+	rc = str_to_guid(buf, guid, len);
+	if (rc)
+		return rc;
+
+	memcpy(&report->desc.attestation_key_guid, guid, sizeof(guid));
+
+	return len;
+}
+CONFIGFS_ATTR(tsm_report_, attestation_key_id);
+
 static ssize_t __read_report(struct tsm_report *report, void *buf, size_t count,
 			     enum tsm_data_select select)
 {
@@ -348,7 +380,8 @@ CONFIGFS_BIN_ATTR_RO(tsm_report_, auxblob, NULL, TSM_OUTBLOB_MAX);
 #define TSM_DEFAULT_ATTRS() \
 	&tsm_report_attr_generation, \
 	&tsm_report_attr_provider, \
-	&tsm_report_attr_remote_guid
+	&tsm_report_attr_remote_guid, \
+	&tsm_report_attr_attestation_key_id
 
 static struct configfs_attribute *tsm_report_attrs[] = {
 	TSM_DEFAULT_ATTRS(),

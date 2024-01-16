@@ -127,3 +127,12 @@ Description:
 	       (RW) GUID of the report generation remote server. Used if the report
 	       generation service is hosted in a remote VM. Userspace can read back
 	       to verify whether a valid GUID is configured.
+
+What:          /sys/kernel/config/tsm/report/$name/attestation_key_id
+Date:          January, 2023
+KernelVersion: v6.9
+Contact:       linux-coco@lists.linux.dev
+Description:
+	       (RW) GUID of the attestation key used for signing the report. Used if
+	       the report generation service is hosted in a remote VM. Userspace can
+	       read back to verify whether a valid GUID is configured.
